@@ -1,4 +1,8 @@
-# Live Plane Tracker (Java + Spring Boot)
+﻿<h1 align="center">LIVE PLANE TRACKING SYSTEM</h1>
+
+<p align="center">
+  <img src="https://skillicons.dev/icons?i=java,spring,hibernate,postgres,maven" alt="Tech stack icons" />
+</p>
 
 A real-time aircraft tracking system. The backend polls a flight data source,
 stores position history, and pushes live updates over WebSocket to a Leaflet
