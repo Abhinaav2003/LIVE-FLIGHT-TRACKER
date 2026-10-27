@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Plane Tracker</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root {
+    --bg: #0f1923;
+    --panel: #15212d;
+    --line: #243445;
+    --text: #dce6ee;
+    --muted: #8a9db0;
+    --accent: #f2b84b;
+    --alt-low: #f2b84b;
+    --alt-mid: #4fd1b5;
+    --alt-high: #5aa9ff;
+    --ground: #6c7c8c;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: grid; grid-template-columns: 340px 1fr;
+    background: var(--bg); color: var(--text);
+    font: 14px/1.45 "Segoe UI", system-ui, -apple-system, sans-serif;
+  }
+  aside {
+    display: flex; flex-direction: column; min-height: 0;
+    background: var(--panel); border-right: 1px solid var(--line);
+  }
+  header { padding: 16px 16px 12px; border-bottom: 1px solid var(--line); }
+  h1 { margin: 0 0 2px; font-size: 18px; font-weight: 650; letter-spacing: .2px; }
+  .status { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12.5px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #c0564b; }
+  .dot.live { background: var(--alt-mid); box-shadow: 0 0 0 3px rgba(79,209,181,.18); }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--line); border-bottom: 1px solid var(--line); }
+  .stat { background: var(--panel); padding: 10px 16px; }
+  .stat b { display: block; font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .stat span { color: var(--muted); font-size: 12px; }
+  .search { padding: 12px 16px; }
+  .search input {
+    width: 100%; padding: 9px 11px; border-radius: 6px; border: 1px solid var(--line);
+    background: var(--bg); color: var(--text); font: inherit;
+  }
+  .search input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  #detail { margin: 0 16px 12px; padding: 12px; border: 1px solid var(--accent); border-radius: 8px; display: none; }
+  #detail h2 { margin: 0 0 6px; font-size: 16px; display: flex; justify-content: space-between; align-items: baseline; }
+  #detail h2 button { background: none; border: 0; color: var(--muted); cursor: pointer; font-size: 18px; }
+  #detail dl { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; margin: 0; }
+  #detail dt { color: var(--muted); }
+  #detail dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+  #list { flex: 1; overflow-y: auto; margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--line); }
+  #list li {
+    display: flex; justify-content: space-between; gap: 8px; padding: 9px 16px;
+    border-bottom: 1px solid var(--line); cursor: pointer;
+  }
+  #list li:hover, #list li.sel { background: #1b2a39; }
+  #list li small { color: var(--muted); }
+  #list .empty { color: var(--muted); cursor: default; }
+  #map { height: 100%; width: 100%; background: var(--bg); }
+  .plane svg { width: 26px; height: 26px; filter: drop-shadow(0 1px 2px rgba(0,0,0,.6)); transition: transform .6s linear; }
+  .leaflet-container { font-family: inherit; }
+  @media (max-width: 760px) {
+    body { grid-template-columns: 1fr; grid-template-rows: 46vh 1fr; }
+    aside { order: 2; border-right: 0; border-top: 1px solid var(--line); }
+    #map { order: 1; }
+  }
+  @media (prefers-reduced-motion: reduce) { .plane svg { transition: none; } }
+</style>
+</head>
+<body>
+<aside>
+  <header>
+    <h1>Live Plane Tracker</h1>
+    <div class="status"><span id="dot" class="dot"></span><span id="statusText">Connecting…</span></div>
+  </header>
+  <div class="stats">
+    <div class="stat"><b id="sTotal">0</b><span>Tracked</span></div>
+    <div class="stat"><b id="sAir">0</b><span>Airborne</span></div>
+    <div class="stat"><b id="sAlt">–</b><span>Avg alt (m)</span></div>
+  </div>
+  <div class="search"><input id="q" type="search" placeholder="Search callsign, country or ICAO24" aria-label="Search flights"></div>
+  <div id="detail"></div>
+  <ul id="list"></ul>
+</aside>
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/sockjs-client@1.6.1/dist/sockjs.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@stomp/stompjs@7.0.0/bundles/stomp.umd.min.js"></script>
+<script>
+const map = L.map('map', { zoomControl: true }).setView([22.5, 79], 5);
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  attribution: '&copy; OpenStreetMap contributors &copy; CARTO', maxZoom: 18
+}).addTo(map);
+
+const PLANE_PATH = 'M21 16v-2l-8-5V3.5a1.5 1.5 0 0 0-3 0V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5z';
+const markers = new Map();
+const flights = new Map();
+let selectedId = null;
+let trail = null;
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+function colorFor(f) {
+  if (f.onGround) return getComputedStyle(document.documentElement).getPropertyValue('--ground');
+  const a = f.altitude ?? 0;
+  const v = a < 3000 ? '--alt-low' : a < 9000 ? '--alt-mid' : '--alt-high';
+  return getComputedStyle(document.documentElement).getPropertyValue(v);
+}
+
+function iconFor(f, selected) {
+  const fill = selected ? getComputedStyle(document.documentElement).getPropertyValue('--accent') : colorFor(f);
+  const stroke = selected ? '#fff' : 'none';
+  return L.divIcon({
+    className: 'plane', iconSize: [26, 26], iconAnchor: [13, 13],
+    html: `<svg viewBox="0 0 24 24" style="transform:rotate(${Math.round(f.heading ?? 0)}deg)"><path d="${PLANE_PATH}" fill="${fill}" stroke="${stroke}" stroke-width="0.6"/></svg>`
+  });
+}
+
+function applyFlights(list) {
+  const seen = new Set();
+  list.forEach(f => {
+    seen.add(f.icao24);
+    flights.set(f.icao24, f);
+    const pos = [f.latitude, f.longitude];
+    let m = markers.get(f.icao24);
+    if (m) {
+      m.setLatLng(pos);
+      m.setIcon(iconFor(f, f.icao24 === selectedId));
+    } else {
+      m = L.marker(pos, { icon: iconFor(f, false), keyboard: false }).addTo(map);
+      m.on('click', () => select(f.icao24));
+      markers.set(f.icao24, m);
+    }
+  });
+  for (const id of [...markers.keys()]) {
+    if (!seen.has(id)) {
+      map.removeLayer(markers.get(id));
+      markers.delete(id);
+      flights.delete(id);
+      if (id === selectedId) clearSelection();
+    }
+  }
+  if (selectedId && flights.has(selectedId)) {
+    const f = flights.get(selectedId);
+    if (trail) trail.addLatLng([f.latitude, f.longitude]);
+    renderDetail(f);
+  }
+  renderStats(list);
+  renderList();
+}
+
+function renderStats(list) {
+  const air = list.filter(f => !f.onGround);
+  $('sTotal').textContent = list.length;
+  $('sAir').textContent = air.length;
+  const alts = air.map(f => f.altitude).filter(a => a != null);
+  $('sAlt').textContent = alts.length ? Math.round(alts.reduce((a, b) => a + b, 0) / alts.length).toLocaleString() : '–';
+}
+
+function renderList() {
+  const q = $('q').value.trim().toLowerCase();
+  const rows = [...flights.values()]
+    .filter(f => !q || f.callsign.toLowerCase().includes(q) || f.icao24.includes(q) || (f.originCountry || '').toLowerCase().includes(q))
+    .sort((a, b) => a.callsign.localeCompare(b.callsign))
+    .slice(0, 150);
+  $('list').innerHTML = rows.length ? rows.map(f => `
+    <li data-id="${esc(f.icao24)}" class="${f.icao24 === selectedId ? 'sel' : ''}">
+      <span><b>${esc(f.callsign)}</b><br><small>${esc(f.originCountry)}</small></span>
+      <span style="text-align:right">${f.onGround ? 'On ground' : Math.round(f.altitude ?? 0).toLocaleString() + ' m'}<br>
+      <small>${f.velocity != null ? Math.round(f.velocity * 3.6) + ' km/h' : ''}</small></span>
+    </li>`).join('') : '<li class="empty">No flights match your search.</li>';
+}
+
+function renderDetail(f) {
+  const d = $('detail');
+  d.style.display = 'block';
+  d.innerHTML = `
+    <h2>${esc(f.callsign)} <button id="closeDetail" aria-label="Clear selection">&times;</button></h2>
+    <dl>
+      <dt>ICAO24</dt><dd>${esc(f.icao24)}</dd>
+      <dt>Country</dt><dd>${esc(f.originCountry)}</dd>
+      <dt>Altitude</dt><dd>${f.altitude != null ? Math.round(f.altitude).toLocaleString() + ' m' : '–'}</dd>
+      <dt>Speed</dt><dd>${f.velocity != null ? Math.round(f.velocity * 3.6) + ' km/h' : '–'}</dd>
+      <dt>Heading</dt><dd>${f.heading != null ? Math.round(f.heading) + '°' : '–'}</dd>
+      <dt>Vertical rate</dt><dd>${f.verticalRate != null ? f.verticalRate.toFixed(1) + ' m/s' : '–'}</dd>
+      <dt>Position</dt><dd>${f.latitude.toFixed(3)}, ${f.longitude.toFixed(3)}</dd>
+    </dl>`;
+  $('closeDetail').onclick = clearSelection;
+}
+
+async function select(id) {
+  const prev = selectedId;
+  selectedId = id;
+  if (prev && markers.has(prev)) markers.get(prev).setIcon(iconFor(flights.get(prev), false));
+  const f = flights.get(id);
+  if (!f) return;
+  markers.get(id).setIcon(iconFor(f, true));
+  renderDetail(f);
+  renderList();
+  if (trail) map.removeLayer(trail);
+  trail = L.polyline([], { color: getComputedStyle(document.documentElement).getPropertyValue('--accent'), weight: 2, opacity: .8 }).addTo(map);
+  try {
+    const res = await fetch(`/api/flights/${id}/history`);
+    const pts = (await res.json()).reverse().map(p => [p.latitude, p.longitude]);
+    if (selectedId === id) trail.setLatLngs(pts);
+  } catch (e) { /* trail simply starts from now */ }
+  map.panTo([f.latitude, f.longitude]);
+}
+
+function clearSelection() {
+  if (selectedId && markers.has(selectedId)) markers.get(selectedId).setIcon(iconFor(flights.get(selectedId), false));
+  selectedId = null;
+  if (trail) { map.removeLayer(trail); trail = null; }
+  $('detail').style.display = 'none';
+  renderList();
+}
+
+$('list').addEventListener('click', e => {
+  const li = e.target.closest('li[data-id]');
+  if (li) select(li.dataset.id);
+});
+$('q').addEventListener('input', renderList);
+
+function setStatus(live, text) {
+  $('dot').classList.toggle('live', live);
+  $('statusText').textContent = text;
+}
+
+// First paint from REST, then live updates over WebSocket (STOMP).
+fetch('/api/flights').then(r => r.json()).then(applyFlights).catch(() => {});
+
+const client = new StompJs.Client({
+  webSocketFactory: () => new SockJS('/ws'),
+  reconnectDelay: 3000,
+  onConnect: () => {
+    setStatus(true, 'Live – updates every few seconds');
+    client.subscribe('/topic/flights', msg => applyFlights(JSON.parse(msg.body)));
+  },
+  onWebSocketClose: () => setStatus(false, 'Disconnected – reconnecting…')
+});
+client.activate();
+</script>
+</body>
+</html>

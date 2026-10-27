@@ -1,0 +1,15 @@
+# Render Blueprint: push this repo to GitHub, then
+# Render Dashboard > New > Blueprint > select the repo.
+services:
+  - type: web
+    name: live-plane-tracker
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/stats
+    envVars:
+      - key: TRACKER_PROVIDER      # simulated | opensky
+        value: simulated
+      - key: TRACKER_POLL_INTERVAL_MS
+        value: "5000"
+      - key: SIMULATION_PLANE_COUNT
+        value: "25"
