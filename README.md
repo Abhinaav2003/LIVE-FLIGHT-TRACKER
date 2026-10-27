@@ -96,3 +96,12 @@ src/main/resources
 - Persist to PostgreSQL instead of H2
 - Add airport / route lookup and flight search by route
 - Add Spring Security and user watchlists with alerts
+
+
+---
+
+## Authors
+
+This project was designed and developed by:
+
+- **Abhinav Tiwari**
